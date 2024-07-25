@@ -124,8 +124,13 @@ resource "aws_route_table_association" "private-natgateway" {
   route_table_id = aws_route_table.Natgateway-route.id
 }
 
-resource "aws_route_table_association" "private-s3" {
+resource "aws_route_table_association" "private-s3-a" {
   subnet_id      = aws_subnet.private-a.id
+  route_table_id = aws_route_table.s3-private-connection.id
+}
+
+resource "aws_route_table_association" "private-s3-c" {
+  subnet_id      = aws_subnet.private-c.id
   route_table_id = aws_route_table.s3-private-connection.id
 }
 
@@ -154,5 +159,5 @@ resource "aws_vpc_endpoint" "s3" {
   vpc_id       = aws_vpc.main.id
   service_name = "com.amazonaws.ap-southeast-1.s3"
   #Service name usually com.amazonaws.{region}.{service_name}
-  vpc_endpoint_type = "Interface"
+  vpc_endpoint_type = "Gateway"
 }
