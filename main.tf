@@ -75,6 +75,7 @@ resource "aws_subnet" "public-a" {
   tags = {
     Name = "public-subnet-a"
   }
+
 }
 
 resource "aws_subnet" "public-c" {
@@ -160,4 +161,232 @@ resource "aws_vpc_endpoint" "s3" {
   service_name = "com.amazonaws.ap-southeast-1.s3"
   #Service name usually com.amazonaws.{region}.{service_name}
   vpc_endpoint_type = "Gateway"
+}
+
+#Creating AWS instance for AMIs
+
+resource "aws_instance" "Linux" {
+  ami             = "ami-012c2e8e24e2ae21d"
+  instance_type   = "t2.micro"
+  subnet_id       = aws_subnet.public-a.id
+  security_groups = [aws_security_group.allow_ssh.id]
+
+  root_block_device {
+    volume_size           = 8
+    volume_type           = "gp2"
+    delete_on_termination = true
+  }
+
+  user_data = <<EOF
+                #!/bin/sh
+                #Install a LAMP stack
+                dnf install -y httpd wget php-fpm php-mysqli php-json php php-devel
+                dnf install -y mariadb105-server
+                dnf install -y httpd php-mbstring
+                #Start the web server
+                chkconfig httpd on
+                systemctl start httpd
+                #Install the web pages for our lab
+                if [ ! -f /var/www/html/immersion-day-app-php7.zip ]; then
+                  cd /var/www/html
+                  wget -O 'immersion-day-app-php7.zip' 'https://static.us-east-1.prod.workshops.aws/public/05de623f-34ae-4f69-b11c-e8ec6086573d/assets/immersion-day-app-php7.zip'
+                  unzip immersion-day-app-php7.zip
+                fi
+                #Install the AWS SDK for PHP
+                if [ ! -f /var/www/html/aws.zip ]; then
+                  cd /var/www/html
+                  mkdir vendor
+                  cd vendor
+                  wget https://docs.aws.amazon.com/aws-sdk-php/v3/download/aws.zip
+                  unzip aws.zip
+                  fi
+                # Update existing packages
+                dnf update -y
+                EOF
+
+}
+
+#Creating Security Group for my instances, load balancer
+
+resource "aws_security_group" "allow_ssh" {
+  name        = "allow_SSH"
+  description = "Allow SSH inbound traffic"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "allow_SSH_HTTP"
+  }
+}
+
+resource "aws_security_group" "allow_HTTP" {
+  name        = "allow_HTTP"
+  description = "Allow HTTP inbound & outbound traffic"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "HTTP"
+    from_port        = 80
+    to_port          = 80
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "allow_HTTP"
+  }
+}
+resource "aws_security_group" "allow_HTTP_from_ALB_only" {
+  name        = "ASG-Web-Inst-SG"
+  description = "Allow HTTP inbound traffic from ALB only"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    security_groups = aws_lb.Web-ALB.security_groups
+    
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "ASG-Web-Inst-SG"
+  }
+}
+
+
+
+#Creating AMIs for my instance
+
+resource "aws_ami_from_instance" "web-server" {
+  name               = "Webserver"
+  source_instance_id = aws_instance.Linux.id
+}
+
+#WHERE Creating the target group for my load balancer - where the traffic will be headed to 
+
+resource "aws_lb_target_group" "HTTP" {
+  name     = "HTTP-Targetgroup"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+  target_type = "instance"
+}
+
+
+
+#SYSTEM Creating load balancer for my instances - a system to distribute the traffic 
+
+resource "aws_lb" "Web-ALB" {
+  name               = "Web-ALB"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.allow_HTTP.id]
+  subnets            = [aws_subnet.public-a.id, aws_subnet.public-c.id]
+
+  enable_deletion_protection = true
+
+  tags = {
+    Name = "Web-ALB"
+  }
+}
+
+#HOW Creating my listener for the load balancer - the system to listen to request and passing them on, determines how the traffic will go
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.Web-ALB.arn
+  port = 80
+  protocol = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn =  aws_lb_target_group.HTTP.arn
+  }
+  
+}
+
+#Creating my launch template for my auto scaling group
+
+resource "aws_launch_template" "auto_scaling_template" {
+  name = "web"
+  description = "Immersion Day Web Instances Template - Web only"
+  image_id = aws_ami_from_instance.web-server.id
+  instance_initiated_shutdown_behavior = "terminate"
+  instance_type = "t2.micro"
+  vpc_security_group_ids = [aws_security_group.allow_HTTP_from_ALB_only.id]
+  }
+
+#Creating my autoscaling group 
+
+resource "aws_autoscaling_group" "Web-ASG" {
+  desired_capacity   = 2
+  max_size           = 4
+  min_size           = 2
+  target_group_arns = aws_lb_target_group.HTTP.load_balancer_arns
+  vpc_zone_identifier = [aws_subnet.private-a.id, aws_subnet.private-c.id]
+
+  launch_template {
+    id      = aws_launch_template.auto_scaling_template.id
+    version = "$Latest"
+  }
+
+  tag {
+    key = "Name"
+    value = "ASG-Web-Instance"
+    propagate_at_launch = true
+  }
+}
+#Creating my target tracking scaling policy - if my CPU exceeds 30% in target value, it will add instances, if it drops, it will decrease the number of instances.
+
+resource "aws_autoscaling_policy" "ASG_Policy_30" {
+  autoscaling_group_name = aws_autoscaling_group.Web-ASG.arn
+  name = "Over_30"
+  policy_type = "TargetTrackingScaling"
+
+  target_tracking_configuration {
+    target_value = 30
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+  }
 }
