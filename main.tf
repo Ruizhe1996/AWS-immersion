@@ -65,7 +65,7 @@ resource "aws_route_table" "s3-private-connection" {
   }
 }
 
-#Creating 4 Subnets, 2 Private Subnets and 2 Public Subnets
+#Creating 4 Subnets, 2 Private Subnets and 2 Public Subnets, 2 more private subnets for my DB instances
 
 resource "aws_subnet" "public-a" {
   vpc_id            = aws_vpc.main.id
@@ -108,10 +108,30 @@ resource "aws_subnet" "private-c" {
   }
 }
 
+resource "aws_subnet" "private-d" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.250.0/24"
+  availability_zone = "ap-southeast-1a"
+
+  tags = {
+    Name = "private-subnet-d"
+  }
+}
+
+resource "aws_subnet" "private-e" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.255.0/24"
+  availability_zone = "ap-southeast-1c"
+
+  tags = {
+    Name = "private-subnet-e"
+  }
+}
+
 resource "aws_db_subnet_group" "subnet_group"{
   name  = "aws_db_cluster"
   description = "for my db cluster as we can't specify the subnets within the cluster and only the availability zones"
-  subnet_ids = [aws_subnet.private-c.id, aws_subnet.private-a.id]
+  subnet_ids = [aws_subnet.private-d.id, aws_subnet.private-e.id]
   
 }
 
