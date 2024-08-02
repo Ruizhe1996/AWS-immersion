@@ -108,6 +108,13 @@ resource "aws_subnet" "private-c" {
   }
 }
 
+resource "aws_db_subnet_group" "subnet_group"{
+  name  = "aws_db_cluster"
+  description = "for my db cluster as we can't specify the subnets within the cluster and only the availability zones"
+  subnet_ids = [aws_subnet.private-c.id, aws_subnet.private-a.id]
+  
+}
+
 #Routetable association
 
 resource "aws_route_table_association" "Public-a" {
@@ -294,6 +301,35 @@ resource "aws_security_group" "allow_HTTP_from_ALB_only" {
   }
 }
 
+resource "aws_security_group" "ec2-rds" {
+  name = "EC2-RDS"
+  description = "Security Group for my ec2 outbound"
+  vpc_id      = aws_vpc.main.id
+
+  egress{
+    description  = "MYSQL/Aurora"
+    from_port = 3306
+    to_port = 3306
+    protocol = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
+  }
+}
+
+resource "aws_security_group" "rds_sg" {
+  name        = "RDS-SG"
+  description = "Allow inbound traffic from EC2 instances"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    security_groups = [aws_security_group.ec2-rds.id]
+  }
+}
+
+#associate with the RDS instances
+
 
 
 #Creating AMIs for my instance
@@ -353,7 +389,7 @@ resource "aws_launch_template" "auto_scaling_template" {
   image_id = aws_ami_from_instance.web-server.id
   instance_initiated_shutdown_behavior = "terminate"
   instance_type = "t2.micro"
-  vpc_security_group_ids = [aws_security_group.allow_HTTP_from_ALB_only.id]
+  vpc_security_group_ids = [aws_security_group.allow_HTTP_from_ALB_only.id, aws_security_group.ec2-rds.id]
   }
 
 #Creating my autoscaling group 
@@ -389,4 +425,37 @@ resource "aws_autoscaling_policy" "ASG_Policy_30" {
       predefined_metric_type = "ASGAverageCPUUtilization"
     }
   }
+}
+
+#Here I will launch my RDS cluster 
+
+resource "aws_rds_cluster" "rdscluster" {
+  cluster_identifier      = "rdscluster"
+  engine                  = "aurora-mysql"
+  engine_version          = "5.7.mysql_aurora.2.11.4"
+  availability_zones      = ["ap-southeast-1a"]
+  database_name           = "immersionday"
+  master_username         = "awsuser"
+  master_password         = "awspassword"
+  backup_retention_period = 5
+  preferred_backup_window = "07:00-09:00"
+  db_cluster_instance_class = "db.r5.large"
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  db_subnet_group_name = aws_db_subnet_group.subnet_group.id
+  
+}
+
+#Launching my read replica for high availability
+
+resource "aws_db_instance" "read_replica" {
+  identifier  = "aws-rds-read-replica"
+  engine = "aurora"
+  engine_version = "5.7.mysql_aurora.2.11.4"
+  availability_zone = "ap-southeast-1c"
+  multi_az = false
+  instance_class = "db.r5.large"
+  publicly_accessible   = false
+  auto_minor_version_upgrade = true
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  replicate_source_db = "rdscluster"
 }
